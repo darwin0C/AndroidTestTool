@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -40,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,20 +73,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ToolBoxApp() {
     var currentFeature by rememberSaveable { mutableStateOf(ToolFeature.Home) }
+    val saveableStateHolder = rememberSaveableStateHolder()
 
     Scaffold(
         topBar = {
             if (currentFeature == ToolFeature.Home) {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text("工程测算工具", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                text = currentFeature.title,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        Text("工程测算工具", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface,
@@ -99,14 +95,15 @@ fun ToolBoxApp() {
                 .padding(innerPadding),
             color = MaterialTheme.colorScheme.background,
         ) {
-            when (currentFeature) {
-                ToolFeature.Home -> HomeScreen(onFeatureSelected = { currentFeature = it })
-                ToolFeature.CoordinateConvert -> CoordinateConvertScreen(onBack = { currentFeature = ToolFeature.Home })
-                ToolFeature.CoordinateMeasure -> CoordinateMeasureScreen(onBack = { currentFeature = ToolFeature.Home })
-                ToolFeature.MapDisplay -> MapDisplayScreen(onBack = { currentFeature = ToolFeature.Home })
-                ToolFeature.Compass -> CompassScreen(onBack = { currentFeature = ToolFeature.Home })
-                ToolFeature.Checksum -> ChecksumScreen(onBack = { currentFeature = ToolFeature.Home })
-                ToolFeature.More -> MoreScreen(onBack = { currentFeature = ToolFeature.Home })
+            saveableStateHolder.SaveableStateProvider(currentFeature.name) {
+                when (currentFeature) {
+                    ToolFeature.Home -> HomeScreen(onFeatureSelected = { currentFeature = it })
+                    ToolFeature.CoordinateConvert -> CoordinateConvertScreen(onBack = { currentFeature = ToolFeature.Home })
+                    ToolFeature.CoordinateMeasure -> CompassScreen(onBack = { currentFeature = ToolFeature.Home })
+                    ToolFeature.MapDisplay -> MapDisplayScreen(onBack = { currentFeature = ToolFeature.Home })
+                    ToolFeature.Checksum -> ChecksumScreen(onBack = { currentFeature = ToolFeature.Home })
+                    ToolFeature.More -> MoreScreen(onBack = { currentFeature = ToolFeature.Home })
+                }
             }
         }
     }
@@ -117,19 +114,19 @@ enum class ToolFeature(
     val description: String,
     val mark: String,
 ) {
-    Home("功能选择", "选择要使用的工具", "⌂"),
+    Home("首页", "选择要使用的工具", "⌂"),
     CoordinateConvert("坐标转换", "经纬度、UTM、度分秒互转", "XY"),
-    CoordinateMeasure("坐标量算", "两点距离、方位角、高差量算", "△"),
+    CoordinateMeasure("坐标量算", "距离、方位、高低与指南针", "△"),
     MapDisplay("地图显示", "高德地图显示当前位置", "▦"),
-    Compass("指南针", "读取手机方向传感器", "N"),
-    Checksum("校验码计算", "XOR、SUM、CRC16 校验", "#"),
-    More("其他功能", "预留数据导入、记录管理等工具", "+"),
+    Checksum("校验码计算", "XOR、SUM 校验", "#"),
+    More("其他功能", "预留记录管理等工具", "+"),
 }
 
 private enum class ConvertMode(val label: String) {
     BlToUtm("经纬度 → UTM"),
     UtmToBl("UTM → 经纬度"),
-    Dms("度 / 度分秒"),
+    DegreeToDms("度 → 度分秒"),
+    DmsToDegree("度分秒 → 度"),
 }
 
 @Composable
@@ -138,7 +135,6 @@ private fun HomeScreen(onFeatureSelected: (ToolFeature) -> Unit) {
         ToolFeature.CoordinateConvert,
         ToolFeature.CoordinateMeasure,
         ToolFeature.MapDisplay,
-        ToolFeature.Compass,
         ToolFeature.Checksum,
         ToolFeature.More,
     )
@@ -150,16 +146,7 @@ private fun HomeScreen(onFeatureSelected: (ToolFeature) -> Unit) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            text = "常用工具",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            text = "第一版按“计算核心 + 功能页面 + 后续地图接入”的结构搭建，坐标算法先从 qmycoorconverse.cpp 中迁移可独立验证的部分。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        HomeIntro()
 
         features.chunked(2).forEach { rowItems ->
             Row(
@@ -179,10 +166,34 @@ private fun HomeScreen(onFeatureSelected: (ToolFeature) -> Unit) {
             }
         }
 
-        SectionTitle("软件架构")
-        InfoLine("表现层", "Compose 页面负责表单、结果展示、功能导航。")
-        InfoLine("计算层", "CoordinateMath 承接坐标转换、量算、校验码等纯计算。")
-        InfoLine("扩展层", "地图 SDK、文件导入、历史记录后续独立接入，避免影响计算核心。")
+        SoftwareNote()
+    }
+}
+
+@Composable
+private fun HomeIntro() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "工程测算工具",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "面向工程现场使用，提供坐标转换、坐标量算、地图定位导航和校验码计算等常用功能。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
     }
 }
 
@@ -190,20 +201,21 @@ private fun HomeScreen(onFeatureSelected: (ToolFeature) -> Unit) {
 private fun FeatureCard(feature: ToolFeature, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Card(
         modifier = modifier
-            .height(132.dp)
+            .height(122.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp, pressedElevation = 3.dp),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(14.dp),
+                .padding(12.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(34.dp)
                     .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center,
             ) {
@@ -228,18 +240,48 @@ private fun FeatureCard(feature: ToolFeature, modifier: Modifier = Modifier, onC
 }
 
 @Composable
+private fun SoftwareNote() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "软件说明",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "本软件用于工程测算辅助，计算结果请结合现场情况确认后使用。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "使用中发现问题可联系作者王超",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
 private fun CoordinateConvertScreen(onBack: () -> Unit) {
     var mode by rememberSaveable { mutableStateOf(ConvertMode.BlToUtm) }
     var lat by rememberSaveable { mutableStateOf("39.908823") }
     var lon by rememberSaveable { mutableStateOf("116.39747") }
     var northing by rememberSaveable { mutableStateOf("") }
     var easting by rememberSaveable { mutableStateOf("") }
-    var dms by rememberSaveable { mutableStateOf("116.235831") }
+    var degreeInput by rememberSaveable { mutableStateOf("116.39747") }
+    var dmsInput by rememberSaveable { mutableStateOf("116.2350892") }
     var hemisphere by rememberSaveable { mutableStateOf(Hemisphere.North) }
     var result by rememberSaveable { mutableStateOf("等待计算") }
 
     ToolPage(onBack = onBack) {
-        ModeChips(
+        ConvertModeGrid(
             options = ConvertMode.entries,
             selected = mode,
             label = { it.label },
@@ -251,6 +293,7 @@ private fun CoordinateConvertScreen(onBack: () -> Unit) {
 
         when (mode) {
             ConvertMode.BlToUtm -> {
+                ConvertHint("输入格式：纬度 B、经度 L 使用十进制度，例如 39.908823、116.39747；北纬东经为正，南纬西经为负。")
                 NumberField("纬度 B", lat, { lat = it }, "例：39.908823")
                 NumberField("经度 L", lon, { lon = it }, "例：116.39747")
                 PrimaryAction("计算投影坐标") {
@@ -263,6 +306,7 @@ private fun CoordinateConvertScreen(onBack: () -> Unit) {
             }
 
             ConvertMode.UtmToBl -> {
+                ConvertHint("输入格式：北向 X 为米；东向 Y 使用带号编码值，例如 50 带 534084.68 输入 50534084.68；按实际位置选择南/北半球。")
                 NumberField("北向 X", northing, { northing = it }, "例：4429529.03")
                 NumberField("东向 Y", easting, { easting = it }, "例：50534084.68")
                 ModeChips(
@@ -274,36 +318,47 @@ private fun CoordinateConvertScreen(onBack: () -> Unit) {
                 PrimaryAction("反算经纬度") {
                     result = runCatching {
                         val output = CoordinateMath.utmToLatLon(northing.toDouble(), easting.toDouble(), hemisphere)
-                        "纬度 B：${fmt(output.latitude, 8)}°\n经度 L：${fmt(output.longitude, 8)}°\n纬度 DMS：${fmt(CoordinateMath.decimalToDms(output.latitude), 6)}\n经度 DMS：${fmt(CoordinateMath.decimalToDms(output.longitude), 6)}"
+                        "纬度 B：${fmt(output.latitude, 8)}°\n经度 L：${fmt(output.longitude, 8)}°\n纬度 DMS：${CoordinateMath.decimalToDmsText(output.latitude)}\n经度 DMS：${CoordinateMath.decimalToDmsText(output.longitude)}"
                     }.getOrElse { it.message ?: "输入有误" }
                 }
             }
 
-            ConvertMode.Dms -> {
-                NumberField("角度值", dms, { dms = it }, "十进制度或 D.MMSS")
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            result = runCatching {
-                                "度分秒：${fmt(CoordinateMath.decimalToDms(dms.toDouble()), 6)}"
-                            }.getOrElse { "输入有误" }
-                        },
-                    ) { Text("转 DMS") }
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            result = runCatching {
-                                "十进制度：${fmt(CoordinateMath.dmsToDecimal(dms.toDouble()), 8)}°"
-                            }.getOrElse { "输入有误" }
-                        },
-                    ) { Text("转度") }
+            ConvertMode.DegreeToDms -> {
+                ConvertHint("输入格式：十进制度数字，例如 116.39747；输出格式为 116°23′50.892″。")
+                NumberField("十进制度", degreeInput, { degreeInput = it }, "例：116.39747")
+                PrimaryAction("度—>度分秒") {
+                    result = runCatching {
+                        "度分秒：${CoordinateMath.decimalToDmsText(degreeInput.toDouble())}"
+                    }.getOrElse { it.message ?: "输入有误" }
+                }
+            }
+
+            ConvertMode.DmsToDegree -> {
+                ConvertHint("输入格式：按原数字形式输入度分秒，例如 116.2350892 表示 116°23′50.892″。")
+                NumberField("度分秒", dmsInput, { dmsInput = it }, "例：116.2350892")
+                PrimaryAction("度分秒—>度") {
+                    result = runCatching {
+                        "十进制度：${fmt(CoordinateMath.dmsToDecimal(dmsInput.toDouble()), 8)}°"
+                    }.getOrElse { it.message ?: "输入有误" }
                 }
             }
         }
 
         ResultPanel(result)
     }
+}
+
+@Composable
+private fun ConvertHint(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+    )
 }
 
 @Composable
@@ -314,6 +369,7 @@ private fun CoordinateMeasureScreen(onBack: () -> Unit) {
     var x2 by rememberSaveable { mutableStateOf("100") }
     var y2 by rememberSaveable { mutableStateOf("100") }
     var h2 by rememberSaveable { mutableStateOf("10") }
+    var milScale by rememberSaveable { mutableStateOf(MilScale.Mil6000) }
     var result by rememberSaveable { mutableStateOf("等待计算") }
 
     ToolPage(onBack = onBack) {
@@ -329,6 +385,13 @@ private fun CoordinateMeasureScreen(onBack: () -> Unit) {
             second = FieldState("Y", y2) { y2 = it },
             third = FieldState("H", h2) { h2 = it },
         )
+        SectionTitle("密位")
+        ModeChips(
+            options = MilScale.entries,
+            selected = milScale,
+            label = { it.label },
+            onSelected = { milScale = it },
+        )
         PrimaryAction("量算") {
             result = runCatching {
                 val output = CoordinateMath.distance(
@@ -339,7 +402,9 @@ private fun CoordinateMeasureScreen(onBack: () -> Unit) {
                     y2.toDouble(),
                     h2.toDouble(),
                 )
-                "平距：${fmt(output.horizontalDistance)} m\n斜距：${fmt(output.spatialDistance)} m\n方位角：${fmt(output.azimuthDegrees, 4)}°\n高低角：${fmt(output.elevationDegrees, 4)}°"
+                val azimuthMil = CoordinateMath.degreesToMils(output.azimuthDegrees, milScale)
+                val elevationMil = CoordinateMath.degreesToMils(output.elevationDegrees, milScale, signed = true)
+                "平距：${fmt(output.horizontalDistance)} m\n斜距：${fmt(output.spatialDistance)} m\n方位角：${fmt(output.azimuthDegrees, 4)}°\n方位密位：${fmt(azimuthMil, 1)}\n高低角：${fmt(output.elevationDegrees, 4)}°\n高低密位：${fmt(elevationMil, 1)}"
             }.getOrElse { "输入有误" }
         }
         ResultPanel(result)
@@ -357,14 +422,16 @@ private fun MapDisplayScreen(onBack: () -> Unit) {
         OutlinedButton(onClick = onBack) {
             Text("返回首页")
         }
-        AmapLocationMap()
+        AmapLocationMap(
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
 @Composable
 private fun ChecksumScreen(onBack: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("01 03 00 00 00 02") }
-    var mode by rememberSaveable { mutableStateOf(ChecksumMode.Crc16Modbus) }
+    var mode by rememberSaveable { mutableStateOf(ChecksumMode.Xor8) }
     var result by rememberSaveable { mutableStateOf("等待计算") }
 
     ToolPage(onBack = onBack) {
@@ -395,7 +462,6 @@ private fun ChecksumScreen(onBack: () -> Unit) {
 private fun MoreScreen(onBack: () -> Unit) {
     ToolPage(onBack = onBack) {
         SectionTitle("预留能力")
-        InfoLine("数据导入", "CSV、TXT、NMEA 坐标批量导入。")
         InfoLine("历史记录", "保存每次计算输入与结果，支持复制和复查。")
         InfoLine("参数管理", "椭球、投影方式、南北半球、中央经线配置。")
         InfoLine("设备数据", "后续可接串口、蓝牙或网络协议数据解析。")
@@ -478,11 +544,13 @@ private fun ResultPanel(text: String) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text("结果", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        SelectionContainer {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -517,6 +585,45 @@ private fun InfoLine(title: String, body: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> ConvertModeGrid(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelected: (T) -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        options.chunked(2).forEach { rowItems ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                rowItems.forEach { option ->
+                    FilterChip(
+                        selected = option == selected,
+                        onClick = { onSelected(option) },
+                        label = {
+                            Text(
+                                text = label(option),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (rowItems.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
     }
 }
 

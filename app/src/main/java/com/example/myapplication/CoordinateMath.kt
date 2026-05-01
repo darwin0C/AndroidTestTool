@@ -10,6 +10,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
+import java.util.Locale
 
 data class UtmCoordinate(
     val northing: Double,
@@ -38,7 +39,11 @@ enum class Hemisphere(val label: String) {
 enum class ChecksumMode(val label: String) {
     Xor8("XOR8"),
     Sum8("SUM8"),
-    Crc16Modbus("CRC16-MODBUS"),
+}
+
+enum class MilScale(val label: String, val units: Int) {
+    Mil6000("6000 密位", 6000),
+    Mil6400("6400 密位", 6400),
 }
 
 object CoordinateMath {
@@ -55,6 +60,29 @@ object CoordinateMath {
         return sign * (degrees + minutes / 100.0 + seconds / 10000.0)
     }
 
+    fun decimalToDmsText(decimal: Double, secondsDigits: Int = 3): String {
+        val sign = if (decimal < 0) "-" else ""
+        val value = abs(decimal)
+        var degrees = floor(value).toInt()
+        val minutesFull = (value - degrees) * 60.0
+        var minutes = floor(minutesFull).toInt()
+        var seconds = (minutesFull - minutes) * 60.0
+
+        val scale = 10.0.pow(secondsDigits)
+        seconds = (seconds * scale).roundToInt() / scale
+        if (seconds >= 60.0) {
+            seconds = 0.0
+            minutes += 1
+        }
+        if (minutes >= 60) {
+            minutes = 0
+            degrees += 1
+        }
+
+        val secondsText = "%0${secondsDigits + 3}.${secondsDigits}f".format(Locale.US, seconds)
+        return "$sign$degrees°$minutes′$secondsText″"
+    }
+
     fun dmsToDecimal(dms: Double): Double {
         val sign = if (dms < 0) -1 else 1
         val value = abs(dms)
@@ -62,6 +90,35 @@ object CoordinateMath {
         val minutesFull = (value - degrees) * 100.0
         val minutes = floor(minutesFull)
         val seconds = (minutesFull - minutes) * 100.0
+        return sign * (degrees + minutes / 60.0 + seconds / 3600.0)
+    }
+
+    fun dmsTextToDecimal(text: String): Double {
+        val value = text.trim()
+        require(value.isNotEmpty()) { "请输入度分秒" }
+
+        val sign = if (value.startsWith("-")) -1.0 else 1.0
+        val unsigned = value.removePrefix("+").removePrefix("-")
+        val parts = unsigned
+            .replace("度", "°")
+            .replace("分", "′")
+            .replace("'", "′")
+            .replace("’", "′")
+            .replace("′", " ")
+            .replace("秒", "″")
+            .replace("\"", "″")
+            .replace("”", "″")
+            .replace("″", " ")
+            .replace("°", " ")
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+
+        require(parts.size in 1..3) { "格式应为 11°22′33.444″" }
+        val degrees = parts[0].toDoubleOrNull() ?: throw IllegalArgumentException("度格式有误")
+        val minutes = parts.getOrNull(1)?.toDoubleOrNull() ?: 0.0
+        val seconds = parts.getOrNull(2)?.toDoubleOrNull() ?: 0.0
+        require(minutes in 0.0..<60.0) { "分应小于 60" }
+        require(seconds in 0.0..<60.0) { "秒应小于 60" }
         return sign * (degrees + minutes / 60.0 + seconds / 3600.0)
     }
 
@@ -207,15 +264,18 @@ object CoordinateMath {
         return DistanceResult(horizontal, spatial, azimuth, elevation)
     }
 
+    fun degreesToMils(degrees: Double, scale: MilScale, signed: Boolean = false): Double {
+        val normalized = if (signed) degrees else normalizeDegrees(degrees)
+        return normalized / 360.0 * scale.units
+    }
+
     fun checksum(input: String, mode: ChecksumMode): String {
         val bytes = parseHexBytes(input)
         val value = when (mode) {
             ChecksumMode.Xor8 -> bytes.fold(0) { acc, byte -> acc xor byte }
             ChecksumMode.Sum8 -> bytes.sum() and 0xFF
-            ChecksumMode.Crc16Modbus -> crc16Modbus(bytes)
         }
-        val width = if (mode == ChecksumMode.Crc16Modbus) 4 else 2
-        return value.toString(16).uppercase().padStart(width, '0')
+        return value.toString(16).uppercase().padStart(2, '0')
     }
 
     fun isProjectedCoordinateValid(northing: Double, easting: Double): Boolean {
