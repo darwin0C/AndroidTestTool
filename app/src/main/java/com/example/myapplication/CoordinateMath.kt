@@ -2,6 +2,7 @@ package com.example.myapplication
 
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.floor
@@ -31,6 +32,25 @@ data class DistanceResult(
     val elevationDegrees: Double,
 )
 
+data class ForwardSolveResult(
+    val x: Double,
+    val y: Double,
+    val h: Double,
+    val horizontalDistance: Double,
+    val spatialDistance: Double,
+    val azimuthDegrees: Double,
+    val elevationDegrees: Double,
+)
+
+data class IntersectionResult(
+    val x: Double,
+    val y: Double,
+    val distanceFromA: Double,
+    val distanceFromB: Double,
+    val azimuthFromADegrees: Double,
+    val azimuthFromBDegrees: Double,
+)
+
 enum class Hemisphere(val label: String) {
     North("北半球"),
     South("南半球"),
@@ -47,9 +67,6 @@ enum class MilScale(val label: String, val units: Int) {
 }
 
 object CoordinateMath {
-    private const val WGS84_A = 6378137.0
-    private const val WGS84_B = 6356752.3142452
-
     fun decimalToDms(decimal: Double): Double {
         val sign = if (decimal < 0) -1 else 1
         val value = abs(decimal)
@@ -122,35 +139,41 @@ object CoordinateMath {
         return sign * (degrees + minutes / 60.0 + seconds / 3600.0)
     }
 
-    fun latLonToUtm(latitude: Double, longitude: Double): UtmCoordinate {
+    fun latLonToUtm(
+        latitude: Double,
+        longitude: Double,
+        targetZone: Int? = null,
+        ellipsoid: EllipsoidParameters = EllipsoidParameters.Wgs84,
+    ): UtmCoordinate {
         require(latitude in -90.0..90.0) { "纬度范围应为 -90 到 90" }
-        require(longitude >= -180.0 && longitude < 180.0) { "经度范围应为 -180 到 180" }
+        require(longitude in -180.0..180.0) { "经度范围应为 -180 到 180" }
+        if (targetZone != null) {
+            require(targetZone in 1..60) { "基准带号应为 1 到 60" }
+        }
+        require(ellipsoid.semiMajorAxis > 0.0) { "椭球长半轴应大于 0" }
+        require(ellipsoid.inverseFlattening > 0.0) { "椭球扁率倒数应大于 0" }
 
         val falseNorthing = if (latitude >= 0.0) 0.0 else 10000000.0
         val lat = abs(latitude)
-        val flattening = (WGS84_A - WGS84_B) / WGS84_A
+        val semiMajorAxis = ellipsoid.semiMajorAxis
+        val semiMinorAxis = ellipsoid.semiMinorAxis
+        val flattening = (semiMajorAxis - semiMinorAxis) / semiMajorAxis
         val eccentricitySquared = 2 * flattening - flattening * flattening
         val scale = 0.9996
 
-        var rib = (abs(longitude) / 6.0).toInt() + 1
-        var longitudeOrigin = rib * 6.0 - 3.0
-        if (longitude < 0.0) {
-            rib = ((360.0 + longitude) / 6.0).toInt() + 1 - 30
-            longitudeOrigin *= -1.0
-        } else {
-            rib += 30
-        }
+        val rib = targetZone ?: zoneNumber(longitude)
+        val longitudeOrigin = rib * 6.0 - 183.0
 
         val latRad = lat * PI / 180.0
         val lonRad = longitude * PI / 180.0
         val lonOriginRad = longitudeOrigin * PI / 180.0
         val secondEccentricitySquared = eccentricitySquared / (1.0 - eccentricitySquared)
 
-        val v = WGS84_A / sqrt(1.0 - eccentricitySquared * sin(latRad).pow(2.0))
+        val v = semiMajorAxis / sqrt(1.0 - eccentricitySquared * sin(latRad).pow(2.0))
         val t = tan(latRad).pow(2.0)
         val c = secondEccentricitySquared * cos(latRad).pow(2.0)
         val a = cos(latRad) * (lonRad - lonOriginRad)
-        val m = WGS84_A * (
+        val m = semiMajorAxis * (
             (1.0 - eccentricitySquared / 4.0 - 3.0 * eccentricitySquared.pow(2.0) / 64.0 - 5.0 * eccentricitySquared.pow(3.0) / 256.0) * latRad -
                 (3.0 * eccentricitySquared / 8.0 + 3.0 * eccentricitySquared.pow(2.0) / 32.0 + 45.0 * eccentricitySquared.pow(3.0) / 1024.0) * sin(2.0 * latRad) +
                 (15.0 * eccentricitySquared.pow(2.0) / 256.0 + 45.0 * eccentricitySquared.pow(3.0) / 1024.0) * sin(4.0 * latRad) -
@@ -172,25 +195,47 @@ object CoordinateMath {
         return UtmCoordinate(
             northing = northing,
             easting = easting,
-            zone = zoneNumber(longitude),
+            zone = rib,
             hemisphere = if (latitude >= 0.0) Hemisphere.North else Hemisphere.South,
         )
     }
 
-    fun utmToLatLon(northing: Double, easting: Double, hemisphere: Hemisphere): GeoCoordinate {
+    fun convertUtmToZone(
+        northing: Double,
+        easting: Double,
+        hemisphere: Hemisphere,
+        targetZone: Int,
+        ellipsoid: EllipsoidParameters = EllipsoidParameters.Wgs84,
+    ): UtmCoordinate {
+        require(targetZone in 1..60) { "基准带号应为 1 到 60" }
+        val geo = utmToLatLon(northing, easting, hemisphere, ellipsoid)
+        return latLonToUtm(geo.latitude, geo.longitude, targetZone, ellipsoid)
+    }
+
+    fun utmToLatLon(
+        northing: Double,
+        easting: Double,
+        hemisphere: Hemisphere,
+        ellipsoid: EllipsoidParameters = EllipsoidParameters.Wgs84,
+    ): GeoCoordinate {
         require(isProjectedCoordinateValid(northing, easting)) { "投影坐标超出常用 UTM 范围" }
+        require(ellipsoid.semiMajorAxis > 0.0) { "椭球长半轴应大于 0" }
+        require(ellipsoid.inverseFlattening > 0.0) { "椭球扁率倒数应大于 0" }
 
         var x = northing
         if (hemisphere == Hemisphere.South) {
             x = 10000000.0 - x
         }
+        val semiMajorAxis = ellipsoid.semiMajorAxis
+        val semiMinorAxis = ellipsoid.semiMinorAxis
         val rib = (easting / 1000000.0).toInt()
+        require(rib in 1..60) { "UTM 带号应为 1 到 60" }
         val longitudeOrigin = ((rib - 30) * 6.0 - 3.0) * PI / 180.0
         val y = 500000.0 + rib * 1000000.0 - easting
         val scale = 0.9996
-        val eccentricity = sqrt(1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A))
+        val eccentricity = sqrt(1.0 - (semiMinorAxis * semiMinorAxis) / (semiMajorAxis * semiMajorAxis))
         val meridionalArc = x / scale
-        val mu = meridionalArc / (WGS84_A * (1.0 - eccentricity.pow(2.0) / 4.0 - 3.0 * eccentricity.pow(4.0) / 64.0 - 5.0 * eccentricity.pow(6.0) / 256.0))
+        val mu = meridionalArc / (semiMajorAxis * (1.0 - eccentricity.pow(2.0) / 4.0 - 3.0 * eccentricity.pow(4.0) / 64.0 - 5.0 * eccentricity.pow(6.0) / 256.0))
         val e1 = (1.0 - sqrt(1.0 - eccentricity.pow(2.0))) / (1.0 + sqrt(1.0 - eccentricity.pow(2.0)))
         val footpoint = mu +
             (3.0 * e1 / 2.0 - 27.0 * e1.pow(3.0) / 32.0) * sin(2.0 * mu) +
@@ -201,8 +246,8 @@ object CoordinateMath {
         val e2 = eccentricity.pow(2.0) / (1.0 - eccentricity.pow(2.0))
         val c1 = e2 * cos(footpoint).pow(2.0)
         val t1 = tan(footpoint).pow(2.0)
-        val r1 = WGS84_A * (1.0 - eccentricity.pow(2.0)) / (1.0 - (eccentricity * sin(footpoint)).pow(2.0)).pow(1.5)
-        val n1 = WGS84_A / sqrt(1.0 - (eccentricity * sin(footpoint)).pow(2.0))
+        val r1 = semiMajorAxis * (1.0 - eccentricity.pow(2.0)) / (1.0 - (eccentricity * sin(footpoint)).pow(2.0)).pow(1.5)
+        val n1 = semiMajorAxis / sqrt(1.0 - (eccentricity * sin(footpoint)).pow(2.0))
         val d = y / (n1 * scale)
 
         var latitude = footpoint - n1 * tan(footpoint) / r1 * (
@@ -227,11 +272,12 @@ object CoordinateMath {
     }
 
     fun zoneNumber(longitude: Double): Int {
-        return if (longitude >= 0.0) {
+        val zone = if (longitude >= 0.0) {
             (longitude / 6.0).toInt() + 31
         } else {
             ((longitude + 180.0) / 6.0).toInt() + 1
         }
+        return zone.coerceIn(1, 60)
     }
 
     fun latitudeBand(latitude: Double): Char? {
@@ -264,9 +310,111 @@ object CoordinateMath {
         return DistanceResult(horizontal, spatial, azimuth, elevation)
     }
 
+    fun gridConvergenceDegrees(
+        northing: Double,
+        easting: Double,
+        hemisphere: Hemisphere = Hemisphere.North,
+        ellipsoid: EllipsoidParameters = EllipsoidParameters.Wgs84,
+    ): Double {
+        val geo = utmToLatLon(northing, easting, hemisphere, ellipsoid)
+        val zone = (easting / 1000000.0).toInt()
+        require(zone in 1..60) { "UTM 带号应为 1 到 60" }
+
+        val latitudeRad = geo.latitude * PI / 180.0
+        val longitudeRad = geo.longitude * PI / 180.0
+        val centralMeridianRad = (zone * 6.0 - 183.0) * PI / 180.0
+        val convergenceRad = atan(tan(longitudeRad - centralMeridianRad) * sin(latitudeRad))
+        return convergenceRad * 180.0 / PI
+    }
+
     fun degreesToMils(degrees: Double, scale: MilScale, signed: Boolean = false): Double {
         val normalized = if (signed) degrees else normalizeDegrees(degrees)
         return normalized / 360.0 * scale.units
+    }
+
+    fun milsToDegrees(mils: Double, scale: MilScale, signed: Boolean = false): Double {
+        val degrees = mils / scale.units * 360.0
+        return if (signed && degrees > 180.0) {
+            degrees - 360.0
+        } else if (signed) {
+            degrees
+        } else {
+            normalizeDegrees(degrees)
+        }
+    }
+
+    fun forwardSolveByMils(
+        x: Double,
+        y: Double,
+        h: Double,
+        azimuthMil: Double,
+        elevationMil: Double,
+        distance: Double,
+        scale: MilScale,
+    ): ForwardSolveResult {
+        require(distance >= 0.0) { "距离应大于或等于 0" }
+        require(azimuthMil in 0.0..scale.units.toDouble()) { "方位密位应在 0 到 ${scale.units} 范围内" }
+        val elevationLimit = scale.units / 4.0
+        require(elevationMil in -elevationLimit..elevationLimit) { "高低密位应在 -${elevationLimit.toInt()} 到 ${elevationLimit.toInt()} 范围内" }
+        val azimuthDegrees = milsToDegrees(azimuthMil, scale)
+        val elevationDegrees = milsToDegrees(elevationMil, scale, signed = true)
+        require(elevationDegrees in -90.0..90.0) { "高低角范围应为 -90° 到 90°" }
+
+        val azimuthRad = azimuthDegrees * PI / 180.0
+        val elevationRad = elevationDegrees * PI / 180.0
+        val horizontal = distance * cos(elevationRad)
+        val dx = horizontal * cos(azimuthRad)
+        val dy = horizontal * sin(azimuthRad)
+        val dh = distance * sin(elevationRad)
+
+        return ForwardSolveResult(
+            x = x + dx,
+            y = y + dy,
+            h = h + dh,
+            horizontalDistance = horizontal,
+            spatialDistance = distance,
+            azimuthDegrees = azimuthDegrees,
+            elevationDegrees = elevationDegrees,
+        )
+    }
+
+    fun intersectionByMils(
+        ax: Double,
+        ay: Double,
+        aAzimuthMil: Double,
+        bx: Double,
+        by: Double,
+        bAzimuthMil: Double,
+        scale: MilScale,
+    ): IntersectionResult {
+        require(aAzimuthMil in 0.0..scale.units.toDouble()) { "A 点观测方位密位应在 0 到 ${scale.units} 范围内" }
+        require(bAzimuthMil in 0.0..scale.units.toDouble()) { "B 点观测方位密位应在 0 到 ${scale.units} 范围内" }
+
+        val aAzimuthDegrees = milsToDegrees(aAzimuthMil, scale)
+        val bAzimuthDegrees = milsToDegrees(bAzimuthMil, scale)
+        val aRad = aAzimuthDegrees * PI / 180.0
+        val bRad = bAzimuthDegrees * PI / 180.0
+        val auX = cos(aRad)
+        val auY = sin(aRad)
+        val buX = cos(bRad)
+        val buY = sin(bRad)
+        val det = cross(auX, auY, buX, buY)
+        require(abs(det) > 1.0e-10) { "两条观测方位线平行或接近平行，无法交会" }
+
+        val dx = bx - ax
+        val dy = by - ay
+        val distanceFromA = cross(dx, dy, buX, buY) / det
+        val distanceFromB = cross(dx, dy, auX, auY) / det
+        require(distanceFromA >= 0.0 && distanceFromB >= 0.0) { "交会点不在两点观测方位的前方" }
+
+        return IntersectionResult(
+            x = ax + distanceFromA * auX,
+            y = ay + distanceFromA * auY,
+            distanceFromA = distanceFromA,
+            distanceFromB = distanceFromB,
+            azimuthFromADegrees = aAzimuthDegrees,
+            azimuthFromBDegrees = bAzimuthDegrees,
+        )
     }
 
     fun checksum(input: String, mode: ChecksumMode): String {
@@ -289,6 +437,10 @@ object CoordinateMath {
         var normalized = value % 360.0
         if (normalized < 0.0) normalized += 360.0
         return normalized
+    }
+
+    private fun cross(ax: Double, ay: Double, bx: Double, by: Double): Double {
+        return ax * by - ay * bx
     }
 
     private fun parseHexBytes(input: String): List<Int> {

@@ -57,27 +57,43 @@ import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
+
+private enum class CompassMeasureMode(val label: String) {
+    TwoPoint("坐标量算"),
+    ForwardSolve("大地解算"),
+}
 
 @Composable
 fun CompassScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val settings = remember { SettingsStore.load(context) }
     var azimuth by remember { mutableFloatStateOf(0f) }
     var status by remember { mutableStateOf("正在读取方向传感器") }
-    var sensorAccuracy by remember { mutableStateOf("精度未知") }
+    var compassAccuracy by remember { mutableStateOf("低") }
+    var magneticInterference by remember { mutableStateOf("弱") }
 
-    var x1 by rememberSaveable { mutableStateOf("5263819") }
-    var y1 by rememberSaveable { mutableStateOf("611865") }
-    var h1 by rememberSaveable { mutableStateOf("160") }
-    var x2 by rememberSaveable { mutableStateOf("5263537") }
-    var y2 by rememberSaveable { mutableStateOf("613256") }
+    var x1 by rememberSaveable { mutableStateOf("5263819.6") }
+    var y1 by rememberSaveable { mutableStateOf("51611865.5") }
+    var h1 by rememberSaveable { mutableStateOf("161") }
+    var x2 by rememberSaveable { mutableStateOf("5263537.2") }
+    var y2 by rememberSaveable { mutableStateOf("51613256.1") }
     var h2 by rememberSaveable { mutableStateOf("170") }
-    var milScale by rememberSaveable { mutableStateOf(MilScale.Mil6000) }
-    val initialTargetResult = CoordinateMath.distance(5263819.0, 611865.0, 160.0, 5263537.0, 613256.0, 170.0)
+    var forwardX by rememberSaveable { mutableStateOf("5259857.87") }
+    var forwardY by rememberSaveable { mutableStateOf("51635675.36") }
+    var forwardH by rememberSaveable { mutableStateOf("167") }
+    var solveAzimuthMil by rememberSaveable { mutableStateOf("2455.506") }
+    var solveElevationMil by rememberSaveable { mutableStateOf("-2.6738") }
+    var solveDistance by rememberSaveable { mutableStateOf("1210.00") }
+    var measureMode by rememberSaveable { mutableStateOf(CompassMeasureMode.TwoPoint) }
+    val milScale = settings.defaultMilScale
+    val initialTargetResult = CoordinateMath.distance(5263819.6, 51611865.5, 161.0, 5263537.2, 51613256.1, 170.0)
     var targetHorizontalDistance by rememberSaveable { mutableStateOf(initialTargetResult.horizontalDistance) }
     var targetSpatialDistance by rememberSaveable { mutableStateOf(initialTargetResult.spatialDistance) }
     var targetAzimuthDegrees by rememberSaveable { mutableStateOf(initialTargetResult.azimuthDegrees) }
     var targetElevationDegrees by rememberSaveable { mutableStateOf(initialTargetResult.elevationDegrees) }
     var targetText by rememberSaveable { mutableStateOf("") }
+    var forwardText by rememberSaveable { mutableStateOf("等待计算") }
     val targetResult = DistanceResult(
         horizontalDistance = targetHorizontalDistance,
         spatialDistance = targetSpatialDistance,
@@ -100,8 +116,35 @@ fun CompassScreen(onBack: () -> Unit) {
             targetAzimuthDegrees = calculated.azimuthDegrees
             targetElevationDegrees = calculated.elevationDegrees
             targetText = ""
+            val input = "点 A：X=$x1, Y=$y1, H=$h1\n点 B：X=$x2, Y=$y2, H=$h2\n密位制：${milScale.label}"
+            HistoryStore.add(context, "坐标量算", "两点量算", input, buildMeasureHistory(calculated, milScale))
         }.getOrElse {
             targetText = "两点坐标输入有误"
+        }
+    }
+
+    fun recalculateForwardSolve() {
+        runCatching {
+            val calculated = CoordinateMath.forwardSolveByMils(
+                x = forwardX.toDouble(),
+                y = forwardY.toDouble(),
+                h = forwardH.toDouble(),
+                azimuthMil = solveAzimuthMil.toDouble(),
+                elevationMil = solveElevationMil.toDouble(),
+                distance = solveDistance.toDouble(),
+                scale = milScale,
+            )
+            targetHorizontalDistance = calculated.horizontalDistance
+            targetSpatialDistance = calculated.spatialDistance
+            targetAzimuthDegrees = calculated.azimuthDegrees
+            targetElevationDegrees = calculated.elevationDegrees
+            targetText = ""
+            forwardText = buildForwardSolveHistory(calculated, milScale)
+            val input = "本地坐标：X=$forwardX, Y=$forwardY, H=$forwardH\n方位密位：$solveAzimuthMil\n高低密位：$solveElevationMil\n直线距离：$solveDistance m\n密位制：${milScale.label}"
+            HistoryStore.add(context, "坐标量算", "大地解算", input, forwardText)
+        }.getOrElse {
+            targetText = it.message ?: "大地解算输入有误"
+            forwardText = targetText
         }
     }
 
@@ -133,6 +176,7 @@ fun CompassScreen(onBack: () -> Unit) {
 
                     Sensor.TYPE_MAGNETIC_FIELD -> {
                         lowPass(event.values, geomagnetic)
+                        magneticInterference = magneticInterferenceLevel(event.values)
                         updateOrientationFromFallback(context, gravity, geomagnetic) {
                             azimuth = it
                             status = "方向传感器：加速度计 + 磁力计"
@@ -143,12 +187,12 @@ fun CompassScreen(onBack: () -> Unit) {
 
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
                 if (sensor?.type == Sensor.TYPE_MAGNETIC_FIELD || sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
-                    sensorAccuracy = when (accuracy) {
-                        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "精度高"
-                        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "精度中"
-                        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "精度低，请做 8 字校准"
-                        SensorManager.SENSOR_STATUS_UNRELIABLE -> "精度不可靠，请远离磁场并校准"
-                        else -> "精度未知"
+                    compassAccuracy = when (accuracy) {
+                        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "高"
+                        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "中"
+                        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "低"
+                        SensorManager.SENSOR_STATUS_UNRELIABLE -> "低"
+                        else -> "低"
                     }
                 }
             }
@@ -168,11 +212,57 @@ fun CompassScreen(onBack: () -> Unit) {
         }
     }
 
-    val targetAzimuth = targetResult.azimuthDegrees.toFloat()
-    val relativeBearing = signedDeltaDegrees(targetAzimuth, azimuth)
+    val needCalibration = if (magneticInterference != "弱" || compassAccuracy == "低") "是" else "否"
+    val forwardAzimuthDegrees = solveAzimuthMil.toDoubleOrNull()?.let {
+        CoordinateMath.milsToDegrees(it, milScale)
+    }
+    val forwardElevationDegrees = solveElevationMil.toDoubleOrNull()?.let {
+        CoordinateMath.milsToDegrees(it, milScale, signed = true)
+    }
+    val displayAzimuthDegrees = if (measureMode == CompassMeasureMode.ForwardSolve) {
+        forwardAzimuthDegrees ?: targetResult.azimuthDegrees
+    } else {
+        targetResult.azimuthDegrees
+    }
+    val displayElevationDegrees = if (measureMode == CompassMeasureMode.ForwardSolve) {
+        forwardElevationDegrees ?: targetResult.elevationDegrees
+    } else {
+        targetResult.elevationDegrees
+    }
+    val convergenceResult = if (settings.northReference == NorthReference.GridNorth) {
+        val baseX = if (measureMode == CompassMeasureMode.ForwardSolve) forwardX else x1
+        val baseY = if (measureMode == CompassMeasureMode.ForwardSolve) forwardY else y1
+        runCatching {
+            CoordinateMath.gridConvergenceDegrees(
+                northing = baseX.toDouble(),
+                easting = baseY.toDouble(),
+                hemisphere = Hemisphere.North,
+                ellipsoid = settings.ellipsoidParameters(),
+            )
+        }.getOrNull()
+    } else {
+        0.0
+    }
+    val convergenceDegrees = convergenceResult ?: 0.0
+    val compassAzimuth = if (settings.northReference == NorthReference.GridNorth) {
+        normalizeDegrees((azimuth - convergenceDegrees).toFloat())
+    } else {
+        azimuth
+    }
+    val targetAzimuth = displayAzimuthDegrees.toFloat()
+    val relativeBearing = signedDeltaDegrees(targetAzimuth, compassAzimuth)
     val azimuthMil = CoordinateMath.degreesToMils(targetResult.azimuthDegrees, milScale)
     val elevationMil = CoordinateMath.degreesToMils(targetResult.elevationDegrees, milScale, signed = true)
-    val calculationText = buildString {
+    val northReferenceText = if (settings.northReference == NorthReference.GridNorth) {
+        if (convergenceResult == null) {
+            "北向基准：网格北（收敛角无法计算，请检查 A 点/本地点 UTM 坐标）"
+        } else {
+            "北向基准：网格北，收敛角 γ=${String.format(Locale.US, "%.4f", convergenceDegrees)}°"
+        }
+    } else {
+        "北向基准：坐标北"
+    }
+    val twoPointCalculationText = buildString {
         if (targetText.isNotBlank()) append("$targetText\n")
         append("水平距离：${String.format(Locale.US, "%.3f", targetResult.horizontalDistance)} m\n")
         append("直线距离：${String.format(Locale.US, "%.3f", targetResult.spatialDistance)} m\n")
@@ -180,6 +270,10 @@ fun CompassScreen(onBack: () -> Unit) {
         append("方位密位：${String.format(Locale.US, "%.1f", azimuthMil)}\n")
         append("高低角：${String.format(Locale.US, "%.4f", targetResult.elevationDegrees)}°\n")
         append("高低密位：${String.format(Locale.US, "%.1f", elevationMil)}")
+    }
+    val calculationText = when (measureMode) {
+        CompassMeasureMode.TwoPoint -> twoPointCalculationText
+        CompassMeasureMode.ForwardSolve -> forwardText
     }
 
     Column(
@@ -207,7 +301,7 @@ fun CompassScreen(onBack: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) {
             CompassDial(
-                azimuth = azimuth,
+                azimuth = compassAzimuth,
                 targetAzimuth = targetAzimuth,
             )
             MaterialSurface(
@@ -225,13 +319,13 @@ fun CompassScreen(onBack: () -> Unit) {
                     horizontalAlignment = Alignment.Start,
                 ) {
                     Text(
-                        text = "方位 ${String.format(Locale.US, "%.2f", targetResult.azimuthDegrees)}°",
+                        text = "方位 ${String.format(Locale.US, "%.2f", displayAzimuthDegrees)}°",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "高低 ${String.format(Locale.US, "%.2f", targetResult.elevationDegrees)}°",
+                        text = "高低 ${String.format(Locale.US, "%.2f", displayElevationDegrees)}°",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -250,12 +344,22 @@ fun CompassScreen(onBack: () -> Unit) {
             ) {
                 Text("实时指向", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    text = "${String.format(Locale.US, "%.1f", azimuth)}°  ${directionName(azimuth)}",
+                    text = "${String.format(Locale.US, "%.1f", compassAzimuth)}°  ${directionName(compassAzimuth)}",
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
+                    text = northReferenceText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
                     text = "目标方位：${String.format(Locale.US, "%.1f", targetAzimuth)}°，相对手机正前方 ${turnText(relativeBearing)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "磁场干扰：$magneticInterference\n指南针精度：$compassAccuracy\n是否需要校准：$needCalibration",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -276,33 +380,61 @@ fun CompassScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("两点量算", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text("点 A")
-                CompassTripleNumberRow(
-                    first = CompassFieldState("X", x1) { x1 = it },
-                    second = CompassFieldState("Y", y1) { y1 = it },
-                    third = CompassFieldState("H", h1) { h1 = it },
-                )
-                Text("点 B")
-                CompassTripleNumberRow(
-                    first = CompassFieldState("X", x2) { x2 = it },
-                    second = CompassFieldState("Y", y2) { y2 = it },
-                    third = CompassFieldState("H", h2) { h2 = it },
-                )
+                Text("计算方式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MilScale.entries.forEach { scale ->
+                    CompassMeasureMode.entries.forEach { mode ->
                         FilterChip(
-                            selected = milScale == scale,
-                            onClick = { milScale = scale },
-                            label = { Text(scale.label) },
+                            selected = measureMode == mode,
+                            onClick = {
+                                measureMode = mode
+                                targetText = ""
+                            },
+                            label = { Text(mode.label) },
                         )
                     }
                 }
+                if (measureMode == CompassMeasureMode.TwoPoint) {
+                    Text("点 A")
+                    CompassTripleNumberRow(
+                        first = CompassFieldState("X", x1) { x1 = it },
+                        second = CompassFieldState("Y", y1) { y1 = it },
+                        third = CompassFieldState("H", h1) { h1 = it },
+                    )
+                    Text("点 B")
+                    CompassTripleNumberRow(
+                        first = CompassFieldState("X", x2) { x2 = it },
+                        second = CompassFieldState("Y", y2) { y2 = it },
+                        third = CompassFieldState("H", h2) { h2 = it },
+                    )
+                } else {
+                    Text("本地坐标")
+                    CompassTripleNumberRow(
+                        first = CompassFieldState("X", forwardX) { forwardX = it },
+                        second = CompassFieldState("Y", forwardY) { forwardY = it },
+                        third = CompassFieldState("H", forwardH) { forwardH = it },
+                    )
+                    Text("目标方向和距离")
+                    CompassTripleNumberRow(
+                        first = CompassFieldState("方位密位", solveAzimuthMil) { solveAzimuthMil = it },
+                        second = CompassFieldState("高低密位", solveElevationMil) { solveElevationMil = it },
+                        third = CompassFieldState("距离", solveDistance) { solveDistance = it },
+                    )
+                }
+                Text(
+                    text = "当前密位制：${milScale.label}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Button(
-                    onClick = ::recalculateTarget,
+                    onClick = {
+                        when (measureMode) {
+                            CompassMeasureMode.TwoPoint -> recalculateTarget()
+                            CompassMeasureMode.ForwardSolve -> recalculateForwardSolve()
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("计算并显示方向")
+                    Text(if (measureMode == CompassMeasureMode.TwoPoint) "计算并显示方向" else "计算 B 点坐标")
                 }
                 SelectionContainer {
                     Text(
@@ -421,6 +553,49 @@ private data class CompassFieldState(
     val value: String,
     val onValueChange: (String) -> Unit,
 )
+
+private fun buildMeasureHistory(result: DistanceResult, milScale: MilScale): String {
+    val azimuthMil = CoordinateMath.degreesToMils(result.azimuthDegrees, milScale)
+    val elevationMil = CoordinateMath.degreesToMils(result.elevationDegrees, milScale, signed = true)
+    return buildString {
+        append("水平距离：${String.format(Locale.US, "%.3f", result.horizontalDistance)} m\n")
+        append("直线距离：${String.format(Locale.US, "%.3f", result.spatialDistance)} m\n")
+        append("方位角：${String.format(Locale.US, "%.4f", result.azimuthDegrees)}°\n")
+        append("方位密位：${String.format(Locale.US, "%.1f", azimuthMil)}\n")
+        append("高低角：${String.format(Locale.US, "%.4f", result.elevationDegrees)}°\n")
+        append("高低密位：${String.format(Locale.US, "%.1f", elevationMil)}")
+    }
+}
+
+private fun buildForwardSolveHistory(result: ForwardSolveResult, milScale: MilScale): String {
+    val azimuthMil = CoordinateMath.degreesToMils(result.azimuthDegrees, milScale)
+    val elevationMil = CoordinateMath.degreesToMils(result.elevationDegrees, milScale, signed = true)
+    return buildString {
+        append("B 点 X：${String.format(Locale.US, "%.3f", result.x)}\n")
+        append("B 点 Y：${String.format(Locale.US, "%.3f", result.y)}\n")
+        append("B 点 H：${String.format(Locale.US, "%.3f", result.h)}\n")
+        append("水平距离：${String.format(Locale.US, "%.3f", result.horizontalDistance)} m\n")
+        append("直线距离：${String.format(Locale.US, "%.3f", result.spatialDistance)} m\n")
+        append("方位角：${String.format(Locale.US, "%.4f", result.azimuthDegrees)}°\n")
+        append("方位密位：${String.format(Locale.US, "%.1f", azimuthMil)}\n")
+        append("高低角：${String.format(Locale.US, "%.4f", result.elevationDegrees)}°\n")
+        append("高低密位：${String.format(Locale.US, "%.1f", elevationMil)}")
+    }
+}
+
+private fun magneticInterferenceLevel(values: FloatArray): String {
+    if (values.size < 3) return "强"
+    val strength = sqrt(
+        values[0] * values[0] +
+            values[1] * values[1] +
+            values[2] * values[2],
+    )
+    return when {
+        strength < 20f || strength > 90f -> "强"
+        strength < 25f || strength > 75f -> "中"
+        else -> "弱"
+    }
+}
 
 @Composable
 private fun CompassTripleNumberRow(

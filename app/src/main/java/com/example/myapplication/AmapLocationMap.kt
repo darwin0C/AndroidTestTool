@@ -133,6 +133,9 @@ fun AmapLocationMap(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val settings = remember { SettingsStore.load(context) }
+    val ellipsoid = settings.ellipsoidParameters()
+    val utmInputMode = settings.utmInputMode
     MapsInitializer.updatePrivacyShow(context, true, true)
     MapsInitializer.updatePrivacyAgree(context, true)
     AMapLocationClient.updatePrivacyShow(context, true, true)
@@ -146,7 +149,14 @@ fun AmapLocationMap(
     }
     var location by remember { mutableStateOf<LocationSnapshot?>(null) }
     var statusText by rememberSaveable { mutableStateOf(if (hasLocationPermission) "正在获取当前位置" else "等待定位授权") }
-    var inputMode by rememberSaveable { mutableStateOf(DestinationInputMode.Utm) }
+    var inputMode by rememberSaveable {
+        mutableStateOf(
+            when (settings.defaultMapInput) {
+                DefaultMapInput.LatLon -> DestinationInputMode.LatLon
+                DefaultMapInput.Utm -> DestinationInputMode.Utm
+            },
+        )
+    }
     var targetLat by rememberSaveable { mutableStateOf("") }
     var targetLon by rememberSaveable { mutableStateOf("") }
     var targetZone by rememberSaveable { mutableStateOf("") }
@@ -170,6 +180,7 @@ fun AmapLocationMap(
     var navigationText by rememberSaveable { mutableStateOf("") }
     var pickModeEnabled by rememberSaveable { mutableStateOf(false) }
     var recenterRequest by rememberSaveable { mutableStateOf(0) }
+    var destinationFocusRequest by rememberSaveable { mutableStateOf(0) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
@@ -202,6 +213,7 @@ fun AmapLocationMap(
             destination = destination,
             pickModeEnabled = pickModeEnabled,
             recenterRequest = recenterRequest,
+            destinationFocusRequest = destinationFocusRequest,
             onRecenter = ::requestRecenter,
             onMapPicked = { latitude, longitude ->
                 if (!pickModeEnabled) return@MapArea
@@ -215,14 +227,19 @@ fun AmapLocationMap(
                     }
 
                     DestinationInputMode.Utm -> {
-                        val utm = CoordinateMath.latLonToUtm(latitude, longitude)
-                        targetZone = utm.zone.toString()
+                        val utm = CoordinateMath.latLonToUtm(latitude, longitude, ellipsoid = ellipsoid)
+                        targetZone = if (utmInputMode == UtmInputMode.SplitZone) utm.zone.toString() else ""
                         targetNorthing = fmt(utm.northing, 3)
-                        targetEasting = fmt(utm.easting - utm.zone * 1_000_000.0, 3)
+                        targetEasting = if (utmInputMode == UtmInputMode.SplitZone) {
+                            fmt(utm.easting - utm.zone * 1_000_000.0, 3)
+                        } else {
+                            fmt(utm.easting, 3)
+                        }
                         targetHemisphere = utm.hemisphere
                     }
                 }
                 routeText = "目的地已显示，点击打开高德地图后规划路径"
+                destinationFocusRequest += 1
             },
             onLocationChanged = { latitude, longitude, accuracy ->
                 location = LocationSnapshot(latitude, longitude, accuracy)
@@ -255,6 +272,7 @@ fun AmapLocationMap(
                 onTargetEastingChange = { targetEasting = it },
                 targetHemisphere = targetHemisphere,
                 onTargetHemisphereChange = { targetHemisphere = it },
+                utmInputMode = utmInputMode,
                 onPlanRoute = {
                     val parsed = parseDestination(
                         inputMode = inputMode,
@@ -264,10 +282,13 @@ fun AmapLocationMap(
                         northingText = targetNorthing,
                         eastingText = targetEasting,
                         hemisphere = targetHemisphere,
+                        ellipsoid = ellipsoid,
+                        utmInputMode = utmInputMode,
                     )
                     if (parsed.isSuccess) {
                         setDestination(parsed.getOrThrow())
                         routeText = "目的地已显示，点击打开高德地图后规划路径"
+                        destinationFocusRequest += 1
                     } else {
                         routeText = parsed.exceptionOrNull()?.message ?: "目的坐标输入有误"
                     }
@@ -301,6 +322,7 @@ fun AmapLocationMap(
                 statusText = statusText,
                 routeText = routeText,
                 navigationText = navigationText,
+                ellipsoid = ellipsoid,
                 onNavigate = {
                     val target = destination
                     if (target == null) {
@@ -334,6 +356,7 @@ private fun DestinationSearchPanel(
     onTargetEastingChange: (String) -> Unit,
     targetHemisphere: Hemisphere,
     onTargetHemisphereChange: (Hemisphere) -> Unit,
+    utmInputMode: UtmInputMode,
     onPlanRoute: () -> Unit,
     pickModeEnabled: Boolean,
     onPickModeChange: (Boolean) -> Unit,
@@ -374,16 +397,18 @@ private fun DestinationSearchPanel(
                 }
 
                 DestinationInputMode.Utm -> {
-                    OutlinedTextField(
-                        value = targetZone,
-                        onValueChange = onTargetZoneChange,
-                        label = { Text("带号") },
-                        placeholder = { Text("例：50") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        textStyle = MaterialTheme.typography.bodySmall,
-                    )
+                    if (utmInputMode == UtmInputMode.SplitZone) {
+                        OutlinedTextField(
+                            value = targetZone,
+                            onValueChange = onTargetZoneChange,
+                            label = { Text("带号") },
+                            placeholder = { Text("例：50") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     CoordinateInputRow(
                         firstLabel = "北向 X",
                         firstValue = targetNorthing,
@@ -391,6 +416,15 @@ private fun DestinationSearchPanel(
                         secondLabel = "东向 Y",
                         secondValue = targetEasting,
                         onSecondChange = onTargetEastingChange,
+                    )
+                    Text(
+                        text = if (utmInputMode == UtmInputMode.SplitZone) {
+                            "UTM 输入方式：带号拆分，东向 Y 输入带内值"
+                        } else {
+                            "UTM 输入方式：带号合并，东向 Y 输入带号编码值"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Hemisphere.entries.forEach { hemisphere ->
@@ -464,6 +498,7 @@ private fun LocationInfoPanel(
     statusText: String,
     routeText: String,
     navigationText: String,
+    ellipsoid: EllipsoidParameters,
     onNavigate: () -> Unit,
 ) {
     Surface(
@@ -490,7 +525,7 @@ private fun LocationInfoPanel(
                 )
             } else {
                 val utm = runCatching {
-                    CoordinateMath.latLonToUtm(location.latitude, location.longitude)
+                    CoordinateMath.latLonToUtm(location.latitude, location.longitude, ellipsoid = ellipsoid)
                 }.getOrNull()
                 Text(
                     text = buildString {
@@ -530,7 +565,7 @@ private fun LocationInfoPanel(
                 )
             } else {
                 val utm = runCatching {
-                    CoordinateMath.latLonToUtm(destination.latitude, destination.longitude)
+                    CoordinateMath.latLonToUtm(destination.latitude, destination.longitude, ellipsoid = ellipsoid)
                 }.getOrNull()
                 Text(
                     text = buildString {
@@ -596,6 +631,7 @@ private fun MapArea(
     destination: DestinationPoint?,
     pickModeEnabled: Boolean,
     recenterRequest: Int,
+    destinationFocusRequest: Int,
     onRecenter: () -> Unit,
     onMapPicked: (latitude: Double, longitude: Double) -> Unit,
     onLocationChanged: (latitude: Double, longitude: Double, accuracy: Float) -> Unit,
@@ -607,6 +643,7 @@ private fun MapArea(
             destination = destination,
             pickModeEnabled = pickModeEnabled,
             recenterRequest = recenterRequest,
+            destinationFocusRequest = destinationFocusRequest,
             onMapPicked = onMapPicked,
             onLocationChanged = onLocationChanged,
         )
@@ -646,6 +683,7 @@ private fun AmapMapView(
     destination: DestinationPoint?,
     pickModeEnabled: Boolean,
     recenterRequest: Int,
+    destinationFocusRequest: Int,
     onMapPicked: (latitude: Double, longitude: Double) -> Unit,
     onLocationChanged: (latitude: Double, longitude: Double, accuracy: Float) -> Unit,
 ) {
@@ -654,6 +692,7 @@ private fun AmapMapView(
     var destinationMarker by remember { mutableStateOf<Marker?>(null) }
     var lastDestinationKey by remember { mutableStateOf<String?>(null) }
     var handledRecenterRequest by remember { mutableStateOf(0) }
+    var handledDestinationFocusRequest by remember { mutableStateOf(0) }
     var appliedLocationPermission by remember { mutableStateOf<Boolean?>(null) }
     val latestPickModeEnabled by rememberUpdatedState(pickModeEnabled)
     val latestOnMapPicked by rememberUpdatedState(onMapPicked)
@@ -742,18 +781,22 @@ private fun AmapMapView(
                 if (destinationKey != lastDestinationKey) {
                     lastDestinationKey = destinationKey
                     destinationMarker?.remove()
-                destinationMarker = amap.addMarker(
-                    MarkerOptions()
-                        .position(target)
-                        .title("目的位置")
-                        .snippet(destination.sourceLabel),
-                )
+                    destinationMarker = amap.addMarker(
+                        MarkerOptions()
+                            .position(target)
+                            .title("目的位置")
+                            .snippet(destination.sourceLabel),
+                    )
+                }
+                if (destinationFocusRequest > handledDestinationFocusRequest) {
+                    handledDestinationFocusRequest = destinationFocusRequest
                     amap.animateCamera(CameraUpdateFactory.newLatLngZoom(target, 16f))
                 }
             } else {
                 destinationMarker?.remove()
                 destinationMarker = null
                 lastDestinationKey = null
+                handledDestinationFocusRequest = destinationFocusRequest
             }
 
             if (currentLocation != null && recenterRequest > handledRecenterRequest) {
@@ -781,6 +824,8 @@ private fun parseDestination(
     northingText: String,
     eastingText: String,
     hemisphere: Hemisphere,
+    ellipsoid: EllipsoidParameters,
+    utmInputMode: UtmInputMode,
 ): Result<DestinationPoint> {
     return runCatching {
         when (inputMode) {
@@ -788,23 +833,29 @@ private fun parseDestination(
                 val latitude = latitudeText.toDouble()
                 val longitude = longitudeText.toDouble()
                 require(latitude in -90.0..90.0) { "纬度范围应为 -90 到 90" }
-                require(longitude >= -180.0 && longitude < 180.0) { "经度范围应为 -180 到 180" }
+                require(longitude in -180.0..180.0) { "经度范围应为 -180 到 180" }
                 DestinationPoint(latitude, longitude, "经纬度输入")
             }
 
             DestinationInputMode.Utm -> {
                 val rawEasting = eastingText.toDouble()
-                val encodedEasting = if (rawEasting < 1_000_000.0) {
-                    val zone = zoneText.toIntOrNull()
-                    require(zone != null && zone in 1..60) { "请输入 1-60 的 UTM 带号" }
-                    rawEasting + zone * 1_000_000.0
-                } else {
-                    rawEasting
+                val encodedEasting = when (utmInputMode) {
+                    UtmInputMode.MergedZone -> {
+                        val zone = (rawEasting / 1_000_000.0).toInt()
+                        require(zone in 1..60) { "UTM 带号应为 1 到 60" }
+                        rawEasting
+                    }
+                    UtmInputMode.SplitZone -> {
+                        val zone = zoneText.toIntOrNull()
+                        require(zone != null && zone in 1..60) { "UTM 带号应为 1 到 60" }
+                        rawEasting + zone * 1_000_000.0
+                    }
                 }
                 val coordinate = CoordinateMath.utmToLatLon(
                     northing = northingText.toDouble(),
                     easting = encodedEasting,
                     hemisphere = hemisphere,
+                    ellipsoid = ellipsoid,
                 )
                 DestinationPoint(coordinate.latitude, coordinate.longitude, "UTM 输入")
             }
@@ -820,7 +871,7 @@ private fun startAmapNavigation(
     destination: DestinationPoint,
 ): String {
     val uri = buildString {
-        append("androidamap://route/plan/?sourceApplication=工程测算工具")
+        append("androidamap://route/plan/?sourceApplication=工程量算助手")
         if (start != null) {
             append("&slat=${start.latitude}")
             append("&slon=${start.longitude}")
