@@ -87,7 +87,7 @@ object ProtocolBuilder {
         frame.add((payloadLen ushr 8) and 0xFF)
         appendU16(frame, receiveCode)
         appendU16(frame, sendCode)
-        appendU16(frame, commandCode)
+        appendU16BigEndian(frame, commandCode)
         frame.addAll(parameters)
         frame.add(calcChecksum(frame))
         return frame
@@ -119,6 +119,11 @@ object ProtocolBuilder {
     private fun appendU16(frame: MutableList<Int>, value: Int) {
         frame.add(value and 0xFF)
         frame.add((value ushr 8) and 0xFF)
+    }
+
+    private fun appendU16BigEndian(frame: MutableList<Int>, value: Int) {
+        frame.add((value ushr 8) and 0xFF)
+        frame.add(value and 0xFF)
     }
 
     private fun calcChecksum(frameWithoutChecksum: List<Int>): Int {

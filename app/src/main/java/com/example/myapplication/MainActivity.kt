@@ -330,7 +330,7 @@ private fun SoftwareNote() {
             color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
-            text = "本软件用于工程测算辅助，内置计算公式均以通过测试数据进行了自检，计算结果请结合现场情况确认后使用。",
+            text = "本软件用于工程测算辅助，内置计算公式均已通过测试数据进行了自检，计算结果请结合现场情况确认后使用。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -706,7 +706,7 @@ private fun ProtocolContent() {
     fun fieldMaxChars() = protocol.fieldBytes * 2
 
     SectionTitle("协议生成")
-    ConvertHint("所有输入均为十六进制。EB90 的发站码、收站码、命令字均为 1 字节（2 位）；EB48 均为 2 字节（4 位）。命令参数长度不限制，长度字段和校验码自动生成。")
+    ConvertHint("所有输入均为十六进制。EB90 的发站码、收站码、命令字均为 1 字节（2 位）；EB48 均为 2 字节（4 位），收站码和发站码按原规则写入，命令字按输入顺序大端在前。命令参数长度不限制，长度字段和校验码自动生成。")
     SectionTitle("协议类型")
     ModeChips(
         options = ProtocolKind.entries,
